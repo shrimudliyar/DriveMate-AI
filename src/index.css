@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+  
+  body {
+    @apply bg-brand-grey text-brand-dark antialiased transition-colors duration-200;
+    overflow-x: hidden;
+  }
+
+  body.dark,
+  .dark body {
+    @apply bg-brand-navy-dark text-white;
+  }
+}
+
+/* Reusable clean card styles adhering strictly to the #092C80 / #C7E5FA / #FFFFFF / #F3F6FA / #172B4D design system */
+.dm-card {
+  @apply bg-white dark:bg-brand-navy-surface border border-slate-200/90 dark:border-brand-navy-border rounded-2xl shadow-card transition-all duration-200;
+}
+
+.dm-card-subtle {
+  @apply bg-brand-grey-subtle/70 dark:bg-brand-navy-subtle/60 border border-slate-200 dark:border-brand-navy-border/80 rounded-xl transition-all duration-200;
+}
+
+.dm-input {
+  @apply bg-white dark:bg-brand-navy-dark border border-slate-300 dark:border-brand-navy-border text-brand-dark dark:text-white rounded-xl placeholder:text-slate-400 dark:placeholder:text-slate-500 transition-colors duration-150;
+}
+
+.dm-input:focus {
+  @apply border-brand-navy dark:border-brand-sky ring-2 ring-brand-sky/60 dark:ring-brand-sky/30 outline-none;
+}
+
+/* Utility: hide scrollbar visually while keeping overflow-y-auto scrollability.
+   Overrides the global webkit scrollbar below for the specific element only.
+   Chrome/Edge: ::-webkit-scrollbar { width: 0 }
+   Firefox: scrollbar-width: none
+   IE/Edge legacy: -ms-overflow-style: none                                   */
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;        /* Firefox */
+    -ms-overflow-style: none;     /* IE / legacy Edge */
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;                /* Chrome, Safari, Edge (Blink) */
+  }
+}
+
+/* Custom scrollbars matching theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #1A3C8E;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #254EA8;
+}
