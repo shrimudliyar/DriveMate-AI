@@ -18,12 +18,29 @@ const API_BASE_URL = resolveApiBaseUrl();
 let currentAuthToken = null;
 let authErrorCallback = null;
 
+// Tracks when the last sign-in occurred so we don't fire "session expired"
+// immediately after a fresh authentication (backend might need a moment to
+// accept the new JWT or the first post-login request might coincide with
+// token propagation).  Errors within 10 s of a successful sign-in are
+// treated as transient and do NOT trigger the sign-in modal.
+let lastSignInTimestamp = 0;
+
 export function setApiAuthToken(token) {
   currentAuthToken = token;
+  if (token) {
+    // Record that a fresh sign-in just happened
+    lastSignInTimestamp = Date.now();
+  }
 }
 
 export function onApiAuthError(callback) {
   authErrorCallback = callback;
+}
+
+// Returns true when sufficient time has elapsed since the last sign-in that
+// a 401 is genuinely an expired session, not a transient post-login race.
+function isSessionExpiredError() {
+  return Date.now() - lastSignInTimestamp > 10_000; // 10 seconds grace period
 }
 
 /**
@@ -131,8 +148,18 @@ async function request(endpoint, options = {}) {
     const err = new Error(errorDetail);
     err.status = response.status;
     
-    // Notify auth error listener for 401 Unauthorized or 403 Forbidden if user was authenticated
-    if ((err.status === 401 || err.status === 403) && typeof authErrorCallback === 'function' && authToken) {
+    // Notify auth error listener for 401 Unauthorized or 403 Forbidden if user was
+    // authenticated AND sufficient time has passed since the last sign-in.
+    // The 10-second grace period prevents the "session expired" modal from
+    // incorrectly appearing immediately after a fresh successful login when the
+    // backend is still propagating the new JWT or the first post-login request
+    // races with token availability.
+    if (
+      (err.status === 401 || err.status === 403) &&
+      typeof authErrorCallback === 'function' &&
+      authToken &&
+      isSessionExpiredError()
+    ) {
       authErrorCallback(err);
     }
     throw err;

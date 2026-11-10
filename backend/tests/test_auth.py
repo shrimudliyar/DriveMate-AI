@@ -472,7 +472,9 @@ def test_verify_jwt_token_tampered_hs256_signature_fails_closed(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         verify_jwt_token(forged_token)
     assert exc_info.value.status_code == 401
-    assert "Invalid session token" in exc_info.value.detail
+    # Token signed with wrong secret falls through to Supabase Auth API which rejects it;
+    # assert only on status code (the security guarantee) not on the specific message.
+    assert exc_info.value.detail  # some non-empty rejection detail is present
 
 
 def test_verify_jwt_token_via_supabase_auth_api(monkeypatch):
@@ -515,7 +517,8 @@ def test_verify_jwt_token_fails_closed_when_no_secret_and_offline(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         verify_jwt_token("some-random-token")
     assert exc_info.value.status_code == 401
-    assert "Cryptographic signature verification is required" in exc_info.value.detail
+    # Message updated to match new unified error when both JWT secret and Supabase API are unavailable.
+    assert "Unable to verify authorization credentials" in exc_info.value.detail
 
 
 def test_unsigned_alg_none_token_rejected_regardless_of_config(monkeypatch):

@@ -71,7 +71,15 @@ DEMO_TOKENS = {
 def verify_jwt_token(token: str) -> dict:
     """
     Decodes and validates a Supabase Auth JWT.
-    Supports JWT Secret verification and Supabase Auth client verification.
+    Verification strategy (in order):
+      1. Demo tokens — dev/test only, strictly blocked in production.
+      2. Cryptographic decode with SUPABASE_JWT_SECRET when configured.
+         - ExpiredSignatureError → hard 401 (token is definitively expired).
+         - InvalidTokenError    → falls through to Supabase Auth API as backup,
+                                  in case the secret is slightly misconfigured or
+                                  the token was issued against a different key.
+      3. Supabase Auth API (auth.get_user) — used when no JWT secret is configured
+         or as a fallback when local decode fails for a non-expiry reason.
     """
     # 1. Check offline demo tokens ONLY if demo auth is explicitly enabled (strictly forbidden in production)
     if settings.is_demo_auth_enabled and token in DEMO_TOKENS:
@@ -89,7 +97,8 @@ def verify_jwt_token(token: str) -> dict:
             "app_metadata": {},
         }
 
-    # 2. If Supabase JWT Secret is configured, decode cryptographically
+    # 2. If Supabase JWT Secret is configured, attempt cryptographic decode first
+    jwt_decode_failed = False
     if settings.SUPABASE_JWT_SECRET:
         try:
             payload = jwt.decode(
@@ -101,18 +110,20 @@ def verify_jwt_token(token: str) -> dict:
             )
             return payload
         except jwt.ExpiredSignatureError:
+            # Token is definitively expired — do not fall through; reject immediately.
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session token has expired. Please sign in again.",
             )
         except jwt.InvalidTokenError as err:
-            logger.warning(f"JWT decode failed: {err}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid session token.",
+            # Non-expiry decode failure (wrong secret, wrong algorithm, etc.).
+            # Fall through to Supabase Auth API verification as a reliable backup.
+            logger.warning(
+                f"JWT local decode failed ({err}); falling through to Supabase Auth API verification."
             )
+            jwt_decode_failed = True
 
-    # 3. If Supabase client is connected, verify via auth API
+    # 3. Verify via Supabase Auth API — works when JWT secret is absent or local decode failed
     if db.is_connected and db.supabase:
         try:
             user_resp = db.supabase.auth.get_user(token)
@@ -131,10 +142,16 @@ def verify_jwt_token(token: str) -> dict:
                 detail="Invalid or expired session token.",
             )
 
-    # Cryptographic signature verification is strictly required — never decode without signature
+    # Neither local decode nor Supabase API verification is available
+    if jwt_decode_failed:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid session token.",
+        )
+
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unable to verify authorization credentials. Cryptographic signature verification is required.",
+        detail="Unable to verify authorization credentials. Configure SUPABASE_JWT_SECRET or ensure Supabase connectivity.",
     )
 
 
