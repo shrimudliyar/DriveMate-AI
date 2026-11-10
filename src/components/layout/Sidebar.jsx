@@ -1,27 +1,31 @@
 import React from 'react';
-import { 
-  Car, 
-  CalendarDays, 
-  ShieldCheck, 
-  Calculator, 
-  PhoneCall, 
-  Gauge, 
+import {
+  Car,
+  CalendarDays,
+  ShieldCheck,
+  Calculator,
+  PhoneCall,
+  Gauge,
   Power,
   LogOut,
-  LogIn
+  LogIn,
+  LayoutDashboard,
+  FileCheck,
+  CarFront
 } from 'lucide-react';
 import BrandLogo from '../common/BrandLogo';
 import ThemeToggle from '../common/ThemeToggle';
-import RoleSwitcher from '../common/RoleSwitcher';
+// RoleSwitcher removed for driver mode — drivers see only driver navigation
 import { useBookings } from '../../context/BookingContext';
 import { useAuth } from '../../context/AuthContext';
 
 export default function Sidebar({ currentTab, onSelectTab, bookingsCount = 0 }) {
-  const { 
-    activeRole, 
-    isDriverOnline, 
-    toggleDriverOnline, 
-    pendingRequestsCount 
+  const {
+    activeRole,
+    isDriverOnline,
+    toggleDriverOnline,
+    pendingRequestsCount,
+    acceptedTripsCount,
   } = useBookings();
   const { user, profile, role, isVerifiedDriver, signOut, openAuthModal } = useAuth();
 
@@ -33,8 +37,33 @@ export default function Sidebar({ currentTab, onSelectTab, bookingsCount = 0 }) 
   ];
 
   const driverNavItems = [
-    { id: 'driver-console', label: 'Driver Dashboard', icon: Gauge, count: pendingRequestsCount },
-    { id: 'safety', label: 'Safety Protocols', icon: ShieldCheck },
+    {
+      id: 'driver-dashboard',
+      label: 'Driver Dashboard',
+      icon: Gauge,
+      count: pendingRequestsCount,
+      badgeLabel: 'Pending',
+      badgeClass: 'bg-amber-500 text-white',
+    },
+    {
+      id: 'driver-trips',
+      label: 'My Trips',
+      icon: CarFront,
+      count: acceptedTripsCount,
+      badgeLabel: 'Active',
+      badgeClass: 'bg-brand-navy text-white dark:bg-brand-sky dark:text-brand-navy',
+    },
+    {
+      id: 'safety',
+      label: 'Safety Protocols',
+      icon: ShieldCheck
+    },
+  ];
+
+  const adminNavItems = [
+    { id: 'admin-overview', label: 'Admin Overview', icon: LayoutDashboard },
+    { id: 'admin-applications', label: 'Driver Applications', icon: FileCheck },
+    { id: 'admin-verified', label: 'Verified Pilots', icon: ShieldCheck },
   ];
 
   return (
@@ -44,23 +73,35 @@ export default function Sidebar({ currentTab, onSelectTab, bookingsCount = 0 }) 
         <BrandLogo size="default" showTagline={true} />
       </div>
 
-      {/* Role Switcher Pill — only visible if user is a verified driver */}
-      {isVerifiedDriver && role === 'driver' && (
-        <div className="py-4 border-b border-slate-200 dark:border-brand-navy-border">
-          <div className="text-[10px] font-extrabold uppercase tracking-wider text-brand-muted dark:text-slate-400 mb-2">
-            Workspace Mode
-          </div>
-          <RoleSwitcher className="w-full justify-between" />
-        </div>
-      )}
-
       {/* Main navigation */}
       <nav className="flex-1 py-4 space-y-1.5 overflow-y-auto" aria-label="Sidebar Navigation">
         <div className="text-[10px] font-extrabold uppercase tracking-wider text-brand-muted dark:text-slate-400 px-3 mb-2">
-          {activeRole === 'driver' ? 'Driver Portal' : 'Customer Portal'}
+          {activeRole === 'admin' ? 'Admin Portal' : (activeRole === 'driver' ? 'Driver Portal' : 'Customer Portal')}
         </div>
 
-        {activeRole === 'customer' ? (
+        {activeRole === 'admin' ? (
+          adminNavItems.map(item => {
+            const Icon = item.icon;
+            const isActive = currentTab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectTab(item.id)}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-brand-sky-light text-brand-navy border border-brand-sky dark:bg-brand-navy-surface dark:text-brand-sky dark:border-brand-navy-border shadow-xs'
+                    : 'text-brand-muted hover:text-brand-dark hover:bg-brand-grey-subtle dark:text-slate-400 dark:hover:text-white dark:hover:bg-brand-navy-subtle'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-brand-navy dark:text-brand-sky' : 'text-slate-400'}`} />
+                  <span>{item.label}</span>
+                </div>
+              </button>
+            );
+          })
+        ) : activeRole === 'customer' ? (
           customerNavItems.map(item => {
             const Icon = item.icon;
             const isActive = currentTab === item.id;
@@ -97,7 +138,9 @@ export default function Sidebar({ currentTab, onSelectTab, bookingsCount = 0 }) 
         ) : (
           driverNavItems.map(item => {
             const Icon = item.icon;
-            const isActive = currentTab === item.id;
+            const isActive = item.id === 'driver-dashboard'
+              ? (currentTab === 'driver-dashboard' || currentTab === 'driver-console' || currentTab === 'dashboard')
+              : currentTab === item.id;
             return (
               <button
                 key={item.id}
@@ -115,8 +158,8 @@ export default function Sidebar({ currentTab, onSelectTab, bookingsCount = 0 }) 
                 </div>
 
                 {typeof item.count === 'number' && item.count > 0 && (
-                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-white">
-                    {item.count} Pending
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${item.badgeClass || 'bg-amber-500 text-white'}`}>
+                    {item.count} {item.badgeLabel || ''}
                   </span>
                 )}
               </button>

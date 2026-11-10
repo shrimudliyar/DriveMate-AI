@@ -490,8 +490,8 @@ def voice_chat(
             
             data = action.get("data", {})
             customer_id = current_user.profile_id or current_user.id
-            customer_name = current_user.full_name or "Alex Morgan"
-            customer_phone = current_user.phone or "+91 98765 43210"
+            customer_name = current_user.full_name or (current_user.email.split("@")[0] if current_user.email else "Customer")
+            customer_phone = current_user.phone or ""
 
             fare_data = calculate_fare(
                 duration_hours=data.get("duration", 3),
@@ -507,6 +507,7 @@ def voice_chat(
                 "customer_id": customer_id,
                 "customer_name": customer_name,
                 "customer_phone": customer_phone,
+                "customer_email": current_user.email,
                 "pickup": data.get("pickup", "Indiranagar 100ft Road"),
                 "destination": data.get("destination", "Kempegowda Airport"),
                 "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),

@@ -59,25 +59,6 @@ export default function AuthModal() {
 
   const effectiveRole = authModalRoleHint || chosenRole || 'customer';
 
-  const demoCustomerEmail = 'demo.customer@drivemate.ai';
-  const demoDriverEmail = 'demo.driver@drivemate.ai';
-  const configuredCustomerPassword = import.meta.env.VITE_DEMO_CUSTOMER_PASSWORD || '';
-  const configuredDriverPassword = import.meta.env.VITE_DEMO_DRIVER_PASSWORD || '';
-
-  const handleUseCustomerDemo = () => {
-    setEmail(demoCustomerEmail);
-    setPassword(configuredCustomerPassword || 'demo-customer-pass');
-    setError(null);
-    setSuccessMsg(null);
-  };
-
-  const handleUseDriverDemo = () => {
-    setEmail(demoDriverEmail);
-    setPassword(configuredDriverPassword || 'demo-driver-pass');
-    setError(null);
-    setSuccessMsg(null);
-  };
-
   if (!authModalOpen) return null;
 
   const handleTabChange = (tab) => {
@@ -97,18 +78,24 @@ export default function AuthModal() {
         await signInWithPassword({ email, password });
       } else if (activeTab === 'signup') {
         if (!fullName.trim()) throw new Error('Please enter your full name');
-        await signUp({
+        const signUpData = await signUp({
           email,
           password,
           fullName,
           phone,
           chosenRole: effectiveRole,
         });
-        setSuccessMsg(
-          effectiveRole === 'driver'
-            ? 'Account created! Your driver pilot application is pending background verification.'
-            : 'Welcome to DriveMate AI! Your customer account is ready.'
-        );
+        if (signUpData?.session) {
+          // mailer_autoconfirm is ON — user is signed in immediately, modal closed by signUp()
+          // No need to set a message; the dashboard will render
+        } else {
+          // Email confirmation required — modal stays open, show friendly pending message
+          setSuccessMsg(
+            effectiveRole === 'driver'
+              ? '✅ Application submitted! Check your email to confirm your address, then sign in to track your verification status.'
+              : '✅ Account created! Check your email to confirm your address, then sign in to start booking drivers.'
+          );
+        }
       } else if (activeTab === 'forgot') {
         if (!email.trim()) throw new Error('Please enter your registered email address');
         await resetPassword(email);
@@ -167,14 +154,22 @@ export default function AuthModal() {
         <div className="flex flex-col items-center text-center mb-5">
           <BrandLogo size="default" showTagline={false} />
           <h2 className="text-lg font-extrabold text-brand-navy dark:text-white mt-2">
-            {activeTab === 'signin' && (effectiveRole === 'driver' ? 'Driver Sign In' : 'Customer Sign In')}
+            {activeTab === 'signin' && (
+              authModalRoleHint === 'driver' ? 'Driver Sign In' :
+              authModalRoleHint === 'customer' ? 'Customer Sign In' :
+              'Sign In to DriveMate'
+            )}
             {activeTab === 'signup' && (effectiveRole === 'driver' ? 'Driver Pilot Registration' : 'Create Customer Account')}
             {activeTab === 'forgot' && 'Reset Password'}
           </h2>
           <p className="text-xs text-brand-muted dark:text-slate-400 mt-1">
-            {activeTab === 'signin' && (effectiveRole === 'driver'
-              ? 'Sign in to accept trip dispatches and manage earnings'
-              : 'Sign in to schedule drivers and manage your trips')}
+            {activeTab === 'signin' && (
+              authModalRoleHint === 'driver'
+                ? 'Sign in to accept trip dispatches and manage earnings'
+                : authModalRoleHint === 'customer'
+                ? 'Sign in to schedule drivers and manage your trips'
+                : 'Sign in to access your Customer, Driver, or Admin portal'
+            )}
             {activeTab === 'signup' && (effectiveRole === 'driver'
               ? 'Register as a certified professional driver pilot'
               : 'Sign up to schedule verified drivers for your personal car')}
@@ -400,14 +395,14 @@ export default function AuthModal() {
               </div>
             </div>
 
-            {/* Google OAuth */}
+            {/* Google OAuth (Gracefully disabled until OAuth provider credentials are configured) */}
             <button
               type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isSubmitting}
-              className="w-full py-2 px-3 rounded-xl border border-slate-300 dark:border-brand-navy-border text-xs font-semibold text-brand-dark dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-brand-navy flex items-center justify-center gap-2 transition-all cursor-pointer relative group"
+              disabled
+              title="Google authentication is coming soon. Please use email & password or demo credentials."
+              className="w-full py-2 px-3 rounded-xl border border-slate-200 dark:border-brand-navy-border/60 text-xs font-semibold text-slate-400 dark:text-slate-500 bg-slate-50/60 dark:bg-brand-navy/30 flex items-center justify-center gap-2 transition-all cursor-not-allowed opacity-80"
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 grayscale opacity-60" viewBox="0 0 24 24">
                 <path
                   fill="#4285F4"
                   d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -426,71 +421,10 @@ export default function AuthModal() {
                 />
               </svg>
               <span>Sign in with Google</span>
-              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-brand-navy text-slate-500 dark:text-slate-400">
-                OAuth
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-brand-navy text-slate-500 dark:text-slate-400">
+                Coming Soon
               </span>
             </button>
-
-            {/* Demo Accounts — dev only, strictly filtered to the chosen role */}
-            {!import.meta.env.PROD && (
-              <div className="mt-4 pt-3 border-t border-slate-200 dark:border-brand-navy-border space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-brand-navy dark:text-brand-sky" />
-                    <span className="text-[11px] font-extrabold uppercase tracking-wider text-brand-navy dark:text-brand-sky">
-                      Demo Account — For Testing
-                    </span>
-                  </div>
-                  <span className="text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-brand-navy text-slate-500 dark:text-slate-400">
-                    Dev Only
-                  </span>
-                </div>
-
-                {/* Show Customer Demo ONLY when effectiveRole is customer */}
-                {effectiveRole === 'customer' && (
-                  <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-brand-navy/60 border border-slate-200 dark:border-brand-navy-border flex flex-col justify-between space-y-2">
-                    <div>
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-brand-dark dark:text-white mb-1">
-                        <User className="w-3.5 h-3.5 text-brand-navy dark:text-brand-sky" />
-                        <span>Customer Demo</span>
-                      </div>
-                      <p className="text-[10px] text-brand-muted dark:text-slate-400">
-                        Email: <span className="font-mono text-brand-dark dark:text-slate-200 font-semibold">{demoCustomerEmail}</span>
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleUseCustomerDemo}
-                      className="w-full py-1.5 px-2 rounded-lg bg-white dark:bg-brand-navy border border-slate-300 dark:border-brand-navy-border hover:border-brand-sky text-[10px] font-bold text-brand-navy dark:text-brand-sky hover:bg-brand-sky-light/40 dark:hover:bg-brand-sky/10 transition-all text-center cursor-pointer shadow-2xs"
-                    >
-                      Use Customer Demo
-                    </button>
-                  </div>
-                )}
-
-                {/* Show Driver Demo ONLY when effectiveRole is driver */}
-                {effectiveRole === 'driver' && (
-                  <div className="p-2.5 rounded-xl bg-brand-sky-light/30 dark:bg-brand-navy/60 border border-brand-sky/40 dark:border-brand-navy-border flex flex-col justify-between space-y-2">
-                    <div>
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-brand-dark dark:text-white mb-1">
-                        <Car className="w-3.5 h-3.5 text-brand-navy dark:text-brand-sky" />
-                        <span>Driver Demo</span>
-                      </div>
-                      <p className="text-[10px] text-brand-muted dark:text-slate-400">
-                        Email: <span className="font-mono text-brand-dark dark:text-slate-200 font-semibold">{demoDriverEmail}</span>
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleUseDriverDemo}
-                      className="w-full py-1.5 px-2 rounded-lg bg-white dark:bg-brand-navy border border-brand-sky/60 dark:border-brand-navy-border hover:border-brand-sky text-[10px] font-bold text-brand-navy dark:text-brand-sky hover:bg-brand-sky-light/40 dark:hover:bg-brand-sky/10 transition-all text-center cursor-pointer shadow-2xs"
-                    >
-                      Use Driver Demo
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
           </>
         )}
 

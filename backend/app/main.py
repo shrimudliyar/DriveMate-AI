@@ -17,7 +17,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import health, bookings, drivers, voice
+from app.models import HealthResponse
+from app.routes import health, bookings, drivers, voice, admin
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -43,15 +44,35 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS Middleware — allows the Vite dev server and production frontends
+# CORS Middleware — allows Vite dev server and production frontends (including Vercel)
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX if settings.CORS_ORIGIN_REGEX else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Root and Health Probes (Supports hosting platforms like Render)
+# ---------------------------------------------------------------------------
+@app.get("/", tags=["Health"])
+def root_index():
+    """Root endpoint for status check and documentation discovery."""
+    return {
+        "service": "DriveMate AI API",
+        "status": "healthy",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "environment": settings.ENVIRONMENT,
+    }
+
+@app.get("/health", response_model=HealthResponse, tags=["Health"])
+def root_health():
+    """Alternative health endpoint probed by cloud health monitors."""
+    return health.health_check()
 
 # ---------------------------------------------------------------------------
 # Register API Routers
@@ -60,6 +81,7 @@ app.include_router(health.router)
 app.include_router(bookings.router)
 app.include_router(drivers.router)
 app.include_router(voice.router)
+app.include_router(admin.router)
 
 # ---------------------------------------------------------------------------
 # Startup log & security enforcement

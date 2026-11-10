@@ -36,14 +36,15 @@ def create_booking(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     customer_id = current_user.profile_id or current_user.id
-    customer_name = current_user.full_name or payload.customer_name or "Alex Morgan"
-    customer_phone = current_user.phone or payload.customer_phone or "+91 98765 43210"
+    customer_name = current_user.full_name or payload.customer_name or (current_user.email.split("@")[0] if current_user.email else "Customer")
+    customer_phone = current_user.phone or payload.customer_phone or ""
 
     booking_dict = {
         "id": new_id,
         "customer_id": customer_id,
         "customer_name": customer_name,
         "customer_phone": customer_phone,
+        "customer_email": current_user.email,
         "pickup": payload.pickup,
         "destination": payload.destination,
         "date": payload.date,
@@ -195,7 +196,8 @@ def reject_booking(
             detail=f"Only pending bookings can be declined. Current status is '{booking['status']}'."
         )
 
-    rejected = db.reject_booking(booking_id, payload.reason or "Pilot unavailable")
+    driver_id = current_driver.profile_id or current_driver.id
+    rejected = db.reject_booking(booking_id, payload.reason or "Pilot unavailable", driver_id=driver_id)
     if not rejected:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to decline booking.")
     return rejected

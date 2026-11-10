@@ -57,6 +57,15 @@ DEMO_TOKENS = {
         full_name="Ramesh Applicant",
         phone="+91 98000 11223",
     ),
+    "demo-admin-token": AuthenticatedUser(
+        id="adm_super_01",
+        email="admin@drivemate.ai",
+        role="admin",
+        profile_id="adm_super_01",
+        is_verified_driver=False,
+        full_name="Operations Admin",
+        phone="+91 99999 00000",
+    ),
 }
 
 def verify_jwt_token(token: str) -> dict:
@@ -163,18 +172,23 @@ def get_current_user(
     # 1. Admin privilege: Can ONLY be granted via trusted app_metadata (service-role only), NEVER client-editable user_metadata
     is_admin = (app_meta.get("role") == "admin") or (app_meta.get("is_admin") is True)
 
-    # 2. Driver role and verification status: Derived STRICTLY from trusted database record
-    # User-editable user_metadata is NEVER trusted to grant driver or verified-driver privileges
     driver_prof = db.get_driver_profile(user_id)
-    if driver_prof:
+    if is_admin:
+        # Trusted admin claims take absolute precedence over client-editable user_metadata or driver profile
+        role = "admin"
+        is_verified = False
+        full_name = (driver_prof.get("full_name") if driver_prof else None) or user_meta.get("full_name") or email.split("@")[0]
+        phone = (driver_prof.get("phone") if driver_prof else None) or user_meta.get("phone") or ""
+        profile_id = user_id
+    elif driver_prof:
         v_status = driver_prof.get("verification_status", "")
         is_verified = v_status in ("Police & Background Verified", "verified")
-        role = "admin" if is_admin else "driver"
+        role = "driver"
         full_name = driver_prof.get("full_name") or driver_prof.get("name") or user_meta.get("full_name") or email.split("@")[0]
         phone = driver_prof.get("phone") or user_meta.get("phone") or ""
         profile_id = driver_prof.get("id", user_id)
     else:
-        role = "admin" if is_admin else "customer"
+        role = "customer"
         is_verified = False
         full_name = user_meta.get("full_name") or user_meta.get("name") or email.split("@")[0]
         phone = user_meta.get("phone") or ""
@@ -232,6 +246,23 @@ def require_driver(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden. Driver credentials are pending admin verification.",
+        )
+
+    return current_user
+
+
+def require_admin(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    """
+    Ensures caller is authenticated with administrator privileges.
+    Admin role must originate from trusted app_metadata (service-role set) or trusted demo tokens.
+    Rejects customers, drivers, and unverified users with HTTP 403 Forbidden.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden. Administrator privileges required.",
         )
 
     return current_user

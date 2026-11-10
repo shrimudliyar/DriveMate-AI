@@ -250,3 +250,39 @@ def test_driver_profile_and_metrics():
 
     # Reset back to online
     set_driver_online_status("DRV-1042", DriverStatusToggleRequest(is_online=True), current_driver=mock_driver)
+
+
+def test_driver_record_normalization_with_incomplete_fields():
+    """
+    REGRESSION TEST: Incomplete driver profile data (e.g. from newly registered or unmigrated DB records)
+    must normalize missing array fields ('languages', 'specializations') and name fields
+    safely without causing downstream client runtime crashes (e.g. TypeError on .join()).
+    """
+    from app.database import normalize_driver_record
+
+    # 1. Completely bare record without languages or specializations
+    bare = {
+        "id": "DRV-INCOMPLETE-01",
+        "full_name": "Ramu Applicant",
+        "verification_status": "pending_verification",
+    }
+    normalized = normalize_driver_record(bare)
+    assert normalized["name"] == "Ramu Applicant"
+    assert isinstance(normalized["languages"], list)
+    assert len(normalized["languages"]) > 0
+    assert isinstance(normalized["specializations"], list)
+    assert isinstance(normalized["documents"], dict)
+
+    # 2. Record with string languages instead of list
+    str_langs = {
+        "id": "DRV-INCOMPLETE-02",
+        "name": "Driver Two",
+        "languages": "English, Kannada, Hindi",
+    }
+    norm_str = normalize_driver_record(str_langs)
+    assert norm_str["languages"] == ["English", "Kannada", "Hindi"]
+    assert norm_str["full_name"] == "Driver Two"
+
+    # 3. None input returns None safely
+    assert normalize_driver_record(None) is None
+

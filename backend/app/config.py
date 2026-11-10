@@ -25,6 +25,7 @@ class Settings:
         ).split(",")
         if origin.strip()
     ]
+    CORS_ORIGIN_REGEX: str = os.getenv("CORS_ORIGIN_REGEX", r"^https:\/\/.*\.vercel\.app$")
     
     DEMO_CUSTOMER_ID: str = os.getenv("DEMO_CUSTOMER_ID", "cust_alex_morgan_01")
     DEMO_DRIVER_ID: str = os.getenv("DEMO_DRIVER_ID", "DRV-1042")

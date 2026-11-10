@@ -27,6 +27,10 @@ backend/venv/
 backend/.env
 backend/.env.*
 !backend/.env.example
+.pytest_cache/
+backend/.pytest_cache/
+.coverage
+htmlcov/
 
 # Editor directories and files
 .vscode/*

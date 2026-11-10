@@ -3,7 +3,17 @@
  * Connects the frontend to the FastAPI backend with Bearer token authentication and graceful fallback.
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+import { supabase, isSupabaseConfigured } from './supabase';
+
+function resolveApiBaseUrl() {
+  const envUrl = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  if (!envUrl) {
+    return '/api';
+  }
+  return envUrl.endsWith('/api') ? envUrl : `${envUrl}/api`;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 let currentAuthToken = null;
 let authErrorCallback = null;
@@ -16,13 +26,50 @@ export function onApiAuthError(callback) {
   authErrorCallback = callback;
 }
 
+/**
+ * Resolves the freshest valid access token:
+ * 1. Checks active Supabase session (with proactive refresh if expiring within 60 seconds).
+ * 2. Falls back to in-memory/demo token when Supabase is unconfigured or for demo modes.
+ * 3. Returns null if unauthenticated.
+ */
+async function getValidAuthToken() {
+  if (supabase && isSupabaseConfigured) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        const expiresAt = session.expires_at; // UNIX timestamp in seconds
+        const nowSec = Math.floor(Date.now() / 1000);
+        // Proactively refresh if token expires in less than 60 seconds
+        if (expiresAt && (expiresAt - nowSec < 60)) {
+          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError && refreshData?.session?.access_token) {
+            currentAuthToken = refreshData.session.access_token;
+            return currentAuthToken;
+          }
+        }
+        currentAuthToken = session.access_token;
+        return currentAuthToken;
+      } else {
+        // No active Supabase session: clear any stale token unless it's an explicit demo token
+        if (currentAuthToken && !currentAuthToken.startsWith('demo-')) {
+          currentAuthToken = null;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed reading current Supabase session:', e);
+    }
+  }
+
+  return currentAuthToken;
+}
+
 export function normalizeBooking(b) {
   if (!b) return b;
   return {
     ...b,
     id: b.id,
-    customerName: b.customer_name ?? b.customerName ?? 'Alex Morgan',
-    customerPhone: b.customer_phone ?? b.customerPhone ?? '+91 98765 43210',
+    customerName: b.customer_name ?? b.customerName ?? 'Customer',
+    customerPhone: b.customer_phone ?? b.customerPhone ?? '',
     vehicleTier: b.vehicle_tier ?? b.vehicleTier ?? 'standard',
     vehicleName: b.vehicle_name ?? b.vehicleName ?? 'Customer Vehicle',
     estimatedFare: b.estimated_fare !== undefined ? b.estimated_fare : b.estimatedFare,
@@ -39,9 +86,10 @@ export function normalizeBooking(b) {
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
+  const authToken = await getValidAuthToken();
   const headers = {
     'Content-Type': 'application/json',
-    ...(currentAuthToken ? { Authorization: `Bearer ${currentAuthToken}` } : {}),
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
     ...(options.headers || {}),
   };
 
@@ -49,6 +97,28 @@ async function request(endpoint, options = {}) {
     ...options,
     headers,
   });
+
+  // If 401 Unauthorized and not already retrying, attempt a one-time proactive token refresh & retry
+  if (response.status === 401 && !options._retry && supabase && isSupabaseConfigured) {
+    try {
+      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+      if (!refreshError && refreshData?.session?.access_token) {
+        currentAuthToken = refreshData.session.access_token;
+        const retryHeaders = {
+          ...(options.headers || {}),
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${currentAuthToken}`,
+        };
+        return request(endpoint, {
+          ...options,
+          _retry: true,
+          headers: retryHeaders,
+        });
+      }
+    } catch (refreshErr) {
+      console.warn('Session refresh on 401 failed:', refreshErr);
+    }
+  }
 
   if (!response.ok) {
     let errorDetail = 'API Request Failed';
@@ -62,7 +132,7 @@ async function request(endpoint, options = {}) {
     err.status = response.status;
     
     // Notify auth error listener for 401 Unauthorized or 403 Forbidden if user was authenticated
-    if ((err.status === 401 || err.status === 403) && typeof authErrorCallback === 'function' && currentAuthToken) {
+    if ((err.status === 401 || err.status === 403) && typeof authErrorCallback === 'function' && authToken) {
       authErrorCallback(err);
     }
     throw err;
@@ -99,9 +169,9 @@ export const api = {
 
   createBooking: async (bookingData) => {
     const payload = {
-      customer_id: bookingData.customerId || 'cust_alex_morgan_01',
-      customer_name: bookingData.customerName || 'Alex Morgan',
-      customer_phone: bookingData.customerPhone || '+91 98765 43210',
+      customer_id: bookingData.customerId,
+      customer_name: bookingData.customerName || '',
+      customer_phone: bookingData.customerPhone || '',
       pickup: bookingData.pickup,
       destination: bookingData.destination,
       date: bookingData.date,
@@ -118,7 +188,7 @@ export const api = {
     return normalizeBooking(data);
   },
 
-  acceptBooking: async (id, driverId = 'DRV-1042') => {
+  acceptBooking: async (id, driverId = '') => {
     const data = await request(`/bookings/${id}/accept`, {
       method: 'POST',
       body: JSON.stringify({ driver_id: driverId }),
@@ -126,7 +196,7 @@ export const api = {
     return normalizeBooking(data);
   },
 
-  rejectBooking: async (id, reason = 'Slot schedule conflict', driverId = 'DRV-1042') => {
+  rejectBooking: async (id, reason = 'Slot schedule conflict', driverId = '') => {
     const data = await request(`/bookings/${id}/reject`, {
       method: 'POST',
       body: JSON.stringify({ reason, driver_id: driverId }),
@@ -156,19 +226,62 @@ export const api = {
     return normalizeBooking(data);
   },
 
-  // Driver Profile & Online State
-  getDriverProfile: async (driverId = 'DRV-1042') => {
+  // Driver Profile, Online State & Documents
+  getDriverProfile: async (driverId) => {
+    if (!driverId) throw new Error('driverId is required to fetch driver profile');
     return request(`/drivers/${driverId}/profile`);
   },
 
-  getDriverMetrics: async (driverId = 'DRV-1042') => {
+  getDriverMetrics: async (driverId) => {
+    if (!driverId) throw new Error('driverId is required to fetch driver metrics');
     return request(`/drivers/${driverId}/metrics`);
   },
 
-  setDriverStatus: async (driverId = 'DRV-1042', isOnline = true) => {
+  setDriverStatus: async (driverId, isOnline = true) => {
+    if (!driverId) throw new Error('driverId is required to set driver status');
     return request(`/drivers/${driverId}/status`, {
       method: 'POST',
       body: JSON.stringify({ is_online: isOnline }),
+    });
+  },
+
+  submitDriverDocuments: async (driverId, documents) => {
+    return request(`/drivers/${driverId}/documents`, {
+      method: 'POST',
+      body: JSON.stringify(documents),
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Admin Operations & Driver Verification
+  // ---------------------------------------------------------------------------
+  getAdminStats: async () => {
+    return request('/admin/stats');
+  },
+
+  getDriverApplications: async ({ status, search } = {}) => {
+    const params = new URLSearchParams();
+    if (status && status !== 'all') params.append('status', status);
+    if (search && search.trim()) params.append('search', search.trim());
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return request(`/admin/drivers${qs}`);
+  },
+
+  getDriverApplicationDetail: async (driverId) => {
+    return request(`/admin/drivers/${driverId}`);
+  },
+
+  approveDriverApplication: async (driverId, notes = '') => {
+    return request(`/admin/drivers/${driverId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    });
+  },
+
+  rejectDriverApplication: async (driverId, reason) => {
+    return request(`/admin/drivers/${driverId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
     });
   },
 

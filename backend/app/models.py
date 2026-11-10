@@ -45,9 +45,9 @@ class DriverMetricsResponse(BaseModel):
     rating: float
 
 class BookingCreateRequest(BaseModel):
-    customer_id: Optional[str] = "cust_alex_morgan_01"
-    customer_name: Optional[str] = "Alex Morgan"
-    customer_phone: Optional[str] = "+91 98765 43210"
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
     pickup: str = Field(..., min_length=3, max_length=250)
     destination: str = Field(..., min_length=3, max_length=250)
     date: str = Field(..., description="Date in YYYY-MM-DD format")
@@ -76,6 +76,56 @@ class BookingCancelRequest(BaseModel):
 
 class DriverStatusToggleRequest(BaseModel):
     is_online: bool
+
+class AdminDriverApprovalRequest(BaseModel):
+    notes: Optional[str] = None
+
+class AdminDriverRejectionRequest(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500, description="Mandatory reason for rejection")
+
+    @field_validator("reason")
+    @classmethod
+    def check_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Rejection reason cannot be empty or whitespace only")
+        return v.strip()
+
+class DriverDocumentsPayload(BaseModel):
+    license_front: Optional[str] = None
+    license_back: Optional[str] = None
+    id_proof: Optional[str] = None
+    police_clearance: Optional[str] = None
+    submitted_at: Optional[str] = None
+
+class DriverApplicationResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+    phone: str
+    rating: float = 5.0
+    total_trips: int = 0
+    verification_status: str
+    badge: str
+    license_number: str
+    experience_years: int = 0
+    specializations: List[str] = []
+    languages: List[str] = []
+    is_online: bool = False
+    total_earnings: float = 0.0
+    created_at: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    documents: Optional[dict] = None
+    signed_document_urls: Optional[dict] = None
+
+class AdminStatsResponse(BaseModel):
+    pending_verifications: int
+    verified_pilots: int
+    rejected_applications: int
+    total_drivers: int
+    total_bookings: int
+    active_drives: int
 
 class BookingResponse(BaseModel):
     id: str

@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../api/supabase';
 import { setApiAuthToken, onApiAuthError } from '../api/client';
-import { INITIAL_USER, INITIAL_DRIVER } from '../data/mockData';
 
 const AuthContext = createContext();
 
@@ -14,6 +13,11 @@ export function AuthProvider({ children }) {
   const [isVerifiedDriver, setIsVerifiedDriver] = useState(false);
   const [profile, setProfile] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Password recovery state is set ONLY via the onAuthStateChange PASSWORD_RECOVERY event
+  // (the only reliable signal — the URL hash is cleared by detectSessionInUrl before initSession runs).
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  // Ref mirrors the state so the onAuthStateChange closure can read it without stale closure issues.
+  const isPasswordRecoveryRef = useRef(false);
 
   // Auth modal control
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -54,52 +58,108 @@ export function AuthProvider({ children }) {
     setSession(activeSession);
 
     const userMetadata = authUser.user_metadata || {};
+    const appMetadata = authUser.app_metadata || {};
     const declaredRole = userMetadata.role || 'customer';
 
-    // Check if user is the demo verified driver or customer
-    if (authUser.email === 'pilot.vikram@drivemate.ai' || userMetadata.is_verified_driver) {
-      setRole('driver');
-      setIsVerifiedDriver(true);
+    // 1. ADMIN ROLE HYDRATION (Security: Strictly requires server-side app_metadata or verified demo token)
+    const isAdmin = (appMetadata.role === 'admin') ||
+                    (appMetadata.is_admin === true) ||
+                    (activeSession?.access_token === 'demo-admin-token');
+
+    if (isAdmin) {
+      setRole('admin');
+      setIsVerifiedDriver(false);
       setProfile({
-        ...INITIAL_DRIVER,
-        id: authUser.id || 'DRV-1042',
+        id: authUser.id || 'admin_super_01',
+        name: userMetadata.full_name || 'System Administrator',
         email: authUser.email,
-        name: userMetadata.full_name || INITIAL_DRIVER.name,
+        phone: userMetadata.phone || '',
+        role: 'admin',
+        badge: 'Platform Administrator',
       });
       return;
     }
 
-    // If Supabase is connected, query profile table for verified status
+    // If Supabase is connected, query role-appropriate profile table for verified status
     if (supabase && isSupabaseConfigured) {
       try {
-        const { data: driverData } = await supabase
-          .table('driver_profiles')
-          .select('*')
-          .or(`user_id.eq.${authUser.id},id.eq.${authUser.id}`)
-          .maybeSingle();
+        if (declaredRole === 'driver') {
+          const { data: driverData, error: driverError } = await supabase
+            .from('driver_profiles')
+            .select('*')
+            .eq('id', authUser.id)
+            .maybeSingle();
 
-        if (driverData) {
-          const isVerified = driverData.verification_status === 'Police & Background Verified' ||
-            driverData.verification_status === 'verified';
+          if (driverError) {
+            console.warn('Driver profile fetch error from Supabase:', driverError);
+          }
+
+          if (driverData) {
+            const isVerified = driverData.verification_status === 'Police & Background Verified' ||
+              driverData.verification_status === 'verified';
+            setRole('driver');
+            setIsVerifiedDriver(isVerified);
+            setProfile({
+              id: driverData.id,
+              name: driverData.full_name,
+              phone: driverData.phone,
+              email: driverData.email,
+              rating: driverData.rating || 5.0,
+              badge: driverData.badge || 'Pilot',
+              verificationStatus: driverData.verification_status,
+              licenseNumber: driverData.license_number || 'Pending Submission',
+              experienceYears: driverData.experience_years ?? 3,
+              specializations: Array.isArray(driverData.specializations) ? driverData.specializations : ['Standard Transmission', 'Automatic'],
+              languages: Array.isArray(driverData.languages) ? driverData.languages : ['English', 'Hindi', 'Kannada'],
+              totalTrips: driverData.total_trips ?? 0,
+              joinedDate: driverData.created_at ? new Date(driverData.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'March 2024',
+              rejectionReason: driverData.rejection_reason || null,
+              reviewedBy: driverData.reviewed_by || null,
+              reviewedAt: driverData.reviewed_at || null,
+              documents: driverData.documents || {},
+            });
+            return;
+          }
+
+          // Driver record not in database yet (e.g. newly registered applicant).
+          // Server-set app_metadata is checked for verified status.
+          const isVerified = (appMetadata.is_verified_driver === true) ||
+                             (appMetadata.verification_status === 'Police & Background Verified');
+          const vStatus = appMetadata.verification_status || (isVerified ? 'Police & Background Verified' : 'pending_verification');
+          const vBadge = appMetadata.badge || (isVerified ? 'Certified Gold Pilot' : 'Applicant Pilot');
           setRole('driver');
           setIsVerifiedDriver(isVerified);
           setProfile({
-            id: driverData.id,
-            name: driverData.full_name,
-            phone: driverData.phone,
-            email: driverData.email,
-            rating: driverData.rating || 5.0,
-            badge: driverData.badge || 'Pilot',
-            verificationStatus: driverData.verification_status,
+            id: authUser.id,
+            name: userMetadata.full_name || authUser.email?.split('@')[0] || 'Driver Pilot',
+            phone: userMetadata.phone || '',
+            email: authUser.email,
+            rating: 5.0,
+            badge: vBadge,
+            verificationStatus: vStatus,
+            licenseNumber: userMetadata.license_number || 'PENDING-VERIFICATION',
+            experienceYears: Number(userMetadata.experience_years) || 0,
+            specializations: Array.isArray(userMetadata.specializations) ? userMetadata.specializations : ['Standard Transmission', 'Automatic'],
+            languages: Array.isArray(userMetadata.languages) ? userMetadata.languages : ['English', 'Hindi', 'Kannada'],
+            totalTrips: 0,
+            joinedDate: authUser.created_at ? new Date(authUser.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'Recently',
+            rejectionReason: appMetadata.rejection_reason || null,
+            reviewedBy: appMetadata.reviewed_by || null,
+            reviewedAt: appMetadata.reviewed_at || null,
           });
           return;
         }
 
-        const { data: customerData } = await supabase
-          .table('customer_profiles')
+        // Customer account: query customer_profiles table
+        const { data: customerData, error: customerError } = await supabase
+          .from('customer_profiles')
           .select('*')
-          .or(`user_id.eq.${authUser.id},id.eq.${authUser.id}`)
+          .eq('id', authUser.id)
           .maybeSingle();
+
+        if (customerError) {
+          console.warn('Customer profile fetch error from Supabase:', customerError);
+        }
 
         if (customerData) {
           setRole('customer');
@@ -109,8 +169,8 @@ export function AuthProvider({ children }) {
             name: customerData.full_name,
             phone: customerData.phone,
             email: customerData.email,
-            rating: customerData.rating || 4.95,
-            savedVehicles: customerData.saved_vehicles || INITIAL_USER.savedVehicles,
+            rating: customerData.rating || 5.0,
+            savedVehicles: customerData.saved_vehicles || [],
           });
           return;
         }
@@ -119,16 +179,32 @@ export function AuthProvider({ children }) {
       }
     }
 
+    // Fallback when Supabase is offline or unconfigured
+    if (declaredRole === 'driver') {
+      setRole('driver');
+      setIsVerifiedDriver(false);
+      setProfile({
+        id: authUser.id,
+        name: userMetadata.full_name || authUser.email?.split('@')[0] || 'Driver Pilot',
+        phone: userMetadata.phone || '',
+        email: authUser.email,
+        rating: 5.0,
+        badge: 'Applicant Pilot',
+        verificationStatus: 'pending_verification',
+      });
+      return;
+    }
+
     // Default customer profile fallback
-    setRole(declaredRole);
+    setRole('customer');
     setIsVerifiedDriver(false);
     setProfile({
       id: authUser.id,
       name: userMetadata.full_name || authUser.email?.split('@')[0] || 'Customer',
-      phone: userMetadata.phone || '+91 98765 43210',
+      phone: userMetadata.phone || '',
       email: authUser.email,
-      rating: 4.95,
-      savedVehicles: INITIAL_USER.savedVehicles,
+      rating: 5.0,
+      savedVehicles: [],
     });
   }, []);
 
@@ -150,12 +226,39 @@ export function AuthProvider({ children }) {
     async function initSession() {
       setIsLoading(true);
 
+      // NOTE: We do NOT check the URL for type=recovery here. The reason:
+      // With detectSessionInUrl: true, Supabase JS client exchanges the recovery
+      // token and clears the URL hash BEFORE initSession() reads window.location.
+      // The PASSWORD_RECOVERY event in onAuthStateChange is the only reliable signal.
+
       // 1. Supabase Auth session if configured
       if (supabase && isSupabaseConfigured) {
         try {
           const { data: { session: currentSession } } = await supabase.auth.getSession();
           if (isMounted && currentSession) {
-            await updateProfileFromUser(currentSession.user, currentSession);
+            let activeUser = currentSession.user;
+            let activeSession = currentSession;
+
+            // Fetch fresh server-side user data to capture server-side role updates (e.g. admin promotion)
+            try {
+              const { data: freshUserData, error: userError } = await supabase.auth.getUser();
+              if (!userError && freshUserData?.user) {
+                activeUser = freshUserData.user;
+                const appMeta = activeUser.app_metadata || {};
+                // If user has admin claims, ensure the session token contains updated claims
+                if (appMeta.role === 'admin' || appMeta.is_admin === true) {
+                  const { data: refreshData } = await supabase.auth.refreshSession();
+                  if (refreshData?.session) {
+                    activeSession = refreshData.session;
+                    activeUser = refreshData.session.user || activeUser;
+                  }
+                }
+              }
+            } catch (freshErr) {
+              console.warn('Could not fetch fresh user metadata:', freshErr);
+            }
+
+            await updateProfileFromUser(activeUser, activeSession);
             setIsLoading(false);
             return;
           }
@@ -200,9 +303,30 @@ export function AuthProvider({ children }) {
     if (supabase && isSupabaseConfigured) {
       const { data } = supabase.auth.onAuthStateChange(async (event, newSession) => {
         if (!isMounted) return;
+        if (event === 'PASSWORD_RECOVERY') {
+          isPasswordRecoveryRef.current = true;
+          setIsPasswordRecovery(true);
+          setUser(newSession?.user || null);
+          setSession(newSession || null);
+          setApiAuthToken(newSession?.access_token || null);
+          setIsLoading(false);
+          return;
+        }
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          // Guard: if we're in password recovery mode (set by PASSWORD_RECOVERY event above),
+          // do NOT overwrite the recovery flow with a normal session hydration.
+          // We use a ref here because the closure captures the initial value of the state.
+          if (isPasswordRecoveryRef.current) {
+            setUser(newSession?.user || null);
+            setSession(newSession || null);
+            setApiAuthToken(newSession?.access_token || null);
+            setIsLoading(false);
+            return;
+          }
           await updateProfileFromUser(newSession?.user, newSession);
         } else if (event === 'SIGNED_OUT') {
+          isPasswordRecoveryRef.current = false;
+          setIsPasswordRecovery(false);
           await updateProfileFromUser(null, null);
         }
       });
@@ -218,9 +342,11 @@ export function AuthProvider({ children }) {
   }, [updateProfileFromUser]);
 
   // 1. Sign In with Email & Password
-  const signInWithPassword = async ({ email, password }) => {
+  const signInWithPassword = async ({ email: rawEmail, password }) => {
+    const email = (rawEmail || '').trim();
     const isCustomerDemo = email === 'customer@drivemate.ai' || email === 'demo.customer@drivemate.ai';
     const isDriverDemo = email === 'pilot.vikram@drivemate.ai' || email === 'demo.driver@drivemate.ai';
+    const isAdminDemo = email === 'admin@drivemate.ai' || email === 'demo.admin@drivemate.ai';
 
     if (!supabase || !isSupabaseConfigured) {
       // Local demo mode credentials check
@@ -228,8 +354,24 @@ export function AuthProvider({ children }) {
         return signInDemoUser('customer', email);
       } else if (isDriverDemo) {
         return signInDemoUser('driver', email);
+      } else if (isAdminDemo) {
+        return signInDemoUser('admin', email);
       } else {
         throw new Error('Supabase is not configured yet. Use the demo accounts to test.');
+      }
+    }
+
+    // In local development, if an offline demo email is used without a live Supabase password,
+    // avoid firing an unprovisioned request that produces a 400 in the browser console.
+    if (!import.meta.env.PROD) {
+      if (isAdminDemo) {
+        return signInDemoUser('admin', email);
+      }
+      if (isDriverDemo && !import.meta.env.VITE_DEMO_DRIVER_PASSWORD) {
+        return signInDemoUser('driver', email);
+      }
+      if (isCustomerDemo && !import.meta.env.VITE_DEMO_CUSTOMER_PASSWORD) {
+        return signInDemoUser('customer', email);
       }
     }
 
@@ -244,16 +386,10 @@ export function AuthProvider({ children }) {
       closeAuthModal();
       return data;
     } catch (err) {
-      if (!import.meta.env.PROD && (isCustomerDemo || isDriverDemo)) {
-        const demoRole = isDriverDemo ? 'driver' : 'customer';
-        const configuredPwd = isDriverDemo
-          ? (import.meta.env.VITE_DEMO_DRIVER_PASSWORD || '')
-          : (import.meta.env.VITE_DEMO_CUSTOMER_PASSWORD || '');
-
-        if (!configuredPwd) {
-          console.info(`Supabase Auth signInWithPassword rejected unprovisioned demo account (${err.message}). Using dev demo token in local development.`);
-          return signInDemoUser(demoRole, email);
-        }
+      if (!import.meta.env.PROD && (isCustomerDemo || isDriverDemo || isAdminDemo)) {
+        const demoRole = isAdminDemo ? 'admin' : (isDriverDemo ? 'driver' : 'customer');
+        console.info(`Supabase Auth signInWithPassword rejected unprovisioned demo account (${err.message}). Using dev demo token in local development.`);
+        return signInDemoUser(demoRole, email);
       }
       throw err;
     }
@@ -282,10 +418,15 @@ export function AuthProvider({ children }) {
     });
 
     if (error) throw error;
+
     if (data.session) {
+      // mailer_autoconfirm is ON — session is immediately available
       await updateProfileFromUser(data.user, data.session);
       closeAuthModal();
     }
+    // If data.session is null, email confirmation is required.
+    // The modal stays open so AuthModal can show the "check your email" message.
+    // Return data so AuthModal can detect the pending-confirmation state.
     return data;
   };
 
@@ -322,6 +463,42 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  // 4b. Update Password after Recovery Link Submission
+  const updatePassword = async (newPassword) => {
+    if (!supabase || !isSupabaseConfigured) {
+      throw new Error('Supabase is not configured.');
+    }
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('Password must be at least 6 characters in length.');
+    }
+
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+
+    if (error) throw error;
+
+    isPasswordRecoveryRef.current = false;
+    setIsPasswordRecovery(false);
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState(null, '', '/');
+    }
+
+    if (data?.user) {
+      await updateProfileFromUser(data.user, data.session || session);
+    }
+
+    return data;
+  };
+
+  const cancelPasswordRecovery = () => {
+    isPasswordRecoveryRef.current = false;
+    setIsPasswordRecovery(false);
+    if (typeof window !== 'undefined' && window.history?.replaceState) {
+      window.history.replaceState(null, '', '/');
+    }
+  };
+
   // 5. Sign Out
   const signOut = async () => {
     if (supabase && isSupabaseConfigured) {
@@ -334,6 +511,7 @@ export function AuthProvider({ children }) {
 
     localStorage.removeItem(AUTH_STORAGE_KEY);
     sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem('drivemate_active_role');
     await updateProfileFromUser(null, null);
     openAuthModal('signin');
   };
@@ -345,14 +523,19 @@ export function AuthProvider({ children }) {
       throw new Error('Demo sign-in is disabled in production.');
     }
 
+    const isAdmin = demoRole === 'admin';
     const isDriver = demoRole === 'driver';
-    const email = preferredEmail || (isDriver ? 'demo.driver@drivemate.ai' : 'demo.customer@drivemate.ai');
+    const email = preferredEmail || (isAdmin
+      ? 'admin@drivemate.ai'
+      : (isDriver ? 'demo.driver@drivemate.ai' : 'demo.customer@drivemate.ai'));
     const password = isDriver
       ? (import.meta.env.VITE_DEMO_DRIVER_PASSWORD || '')
       : (import.meta.env.VITE_DEMO_CUSTOMER_PASSWORD || '');
-    const token = isDriver ? 'demo-driver-token' : 'demo-customer-token';
+    const token = isAdmin
+      ? 'demo-admin-token'
+      : (isDriver ? 'demo-driver-token' : 'demo-customer-token');
 
-    if (supabase && isSupabaseConfigured && password) {
+    if (supabase && isSupabaseConfigured && password && !isAdmin) {
       try {
         const { data, error } = await supabase.auth.signInWithPassword({
           email,
@@ -370,12 +553,13 @@ export function AuthProvider({ children }) {
 
     // Verified demo token session (Development only)
     const demoUser = {
-      id: isDriver ? 'DRV-1042' : 'cust_alex_morgan_01',
+      id: isAdmin ? 'admin_super_01' : (isDriver ? 'DRV-1042' : 'cust_alex_morgan_01'),
       email,
+      app_metadata: isAdmin ? { role: 'admin', is_admin: true } : {},
       user_metadata: {
         role: demoRole,
-        full_name: isDriver ? 'Vikramaditya S.' : 'Alex Morgan',
-        phone: isDriver ? '+91 99000 88221' : '+91 98765 43210',
+        full_name: isAdmin ? 'System Administrator' : (isDriver ? 'Vikramaditya S.' : 'Alex Morgan'),
+        phone: isAdmin ? '+91 80000 00000' : (isDriver ? '+91 99000 88221' : '+91 98765 43210'),
         is_verified_driver: isDriver,
       },
     };
@@ -389,6 +573,12 @@ export function AuthProvider({ children }) {
     closeAuthModal();
     return { user: demoUser, session: demoSession };
   };
+
+  const refreshProfile = useCallback(async () => {
+    if (user && session) {
+      await updateProfileFromUser(user, session);
+    }
+  }, [user, session, updateProfileFromUser]);
 
   return (
     <AuthContext.Provider
@@ -410,8 +600,12 @@ export function AuthProvider({ children }) {
         signUp,
         signInWithOAuth,
         resetPassword,
+        updatePassword,
+        cancelPasswordRecovery,
+        isPasswordRecovery,
         signOut,
         signInDemoUser,
+        refreshProfile,
       }}
     >
       {children}

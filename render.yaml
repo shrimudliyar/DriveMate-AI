@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: drivemate-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: ENVIRONMENT
+        value: production
+      - key: ENABLE_DEMO_AUTH
+        value: "false"
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "8000"
+      - key: CORS_ORIGINS
+        value: "https://drivemate-ai.vercel.app"
+      - key: CORS_ORIGIN_REGEX
+        value: "^https://.*\\.vercel\\.app$"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: GNANI_API_KEY
+        sync: false
+      - key: GNANI_BASE_URL
+        value: "https://api.vachana.ai"
+      - key: GNANI_STT_MODEL
+        value: "gnani-prisma-v2.5"
+      - key: GNANI_TTS_MODEL
+        value: "timbre-v2.5"
+      - key: GNANI_TTS_VOICE
+        value: "Nalini"
+      - key: GNANI_LANGUAGE_CODE
+        value: "en-IN"

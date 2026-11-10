@@ -25,6 +25,12 @@ export default function GetStartedModal({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const handleActionSelect = (action) => {
+    if (action === 'signin') {
+      // Direct sign-in: credentials and backend app_metadata determine account role (Customer, Driver, or Admin)
+      openAuthModal('signin');
+      handleClose();
+      return;
+    }
     setPendingAction(action);
     setStep('role');
   };

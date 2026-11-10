@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider } from './context/AuthContext';
 import { BookingProvider, useBookings } from './context/BookingContext';
 import AuthModal from './components/auth/AuthModal';
+import ResetPasswordModal from './components/auth/ResetPasswordModal';
 import { useAuth } from './context/AuthContext';
 
 import Sidebar from './components/layout/Sidebar';
@@ -15,6 +16,8 @@ import SafetySection from './components/safety/SafetySection';
 import PricingView from './components/pricing/PricingView';
 import BookingStatusScreen from './components/booking/BookingStatusScreen';
 import DriverPortal from './components/driver/DriverPortal';
+import AdminPortal from './components/admin/AdminPortal';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 import PublicHome from './components/pages/PublicHome';
 import { Car, CheckCircle2, Sparkles, AlertCircle } from 'lucide-react';
@@ -27,8 +30,39 @@ function MainAppShell() {
     cancelBooking, 
     notification 
   } = useBookings();
+  const { role } = useAuth();
 
-  const [currentTab, setCurrentTab] = useState('dashboard');
+  const [currentTab, setCurrentTab] = useState(() => {
+    try {
+      const saved = localStorage.getItem('drivemate_active_tab');
+      if (saved) return saved;
+    } catch (e) {}
+    return 'dashboard';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('drivemate_active_tab', currentTab);
+    } catch (e) {}
+  }, [currentTab]);
+
+  // Ensure currentTab is synchronized when switching roles
+  useEffect(() => {
+    if (activeRole === 'admin' || role === 'admin') {
+      if (!currentTab.startsWith('admin-')) {
+        setCurrentTab('admin-overview');
+      }
+    } else if (activeRole === 'driver' || role === 'driver') {
+      if (!currentTab.startsWith('driver-') && currentTab !== 'safety') {
+        setCurrentTab('driver-dashboard');
+      }
+    } else {
+      if (currentTab.startsWith('admin-') || currentTab.startsWith('driver-')) {
+        setCurrentTab('dashboard');
+      }
+    }
+  }, [activeRole, role]);
+
   const [activeMatchingBooking, setActiveMatchingBooking] = useState(null);
   const [prefilledBookingValues, setPrefilledBookingValues] = useState(null);
 
@@ -109,17 +143,22 @@ function MainAppShell() {
 
         {/* Main Content Area */}
         <main className="flex-1 min-w-0 px-4 sm:px-8 py-6 max-w-6xl mx-auto space-y-8">
-          
-          {/* ======================================================== */}
-          {/* WORKSPACE MODE 1: DRIVER PORTAL                          */}
-          {/* ======================================================== */}
-          {activeRole === 'driver' ? (
-            <DriverPortal />
-          ) : (
-            /* ======================================================== */
-            /* WORKSPACE MODE 2: CUSTOMER PORTAL                        */
-            /* ======================================================== */
-            <>
+          <ErrorBoundary>
+            {/* ======================================================== */}
+            {/* WORKSPACE MODE 1: ADMIN PORTAL                           */}
+            {/* ======================================================== */}
+            {(activeRole === 'admin' || role === 'admin') ? (
+              <AdminPortal currentTab={currentTab} onSelectTab={setCurrentTab} />
+            ) : (activeRole === 'driver' || role === 'driver') ? (
+              /* ======================================================== */
+              /* WORKSPACE MODE 2: DRIVER PORTAL                          */
+              /* ======================================================== */
+              <DriverPortal currentTab={currentTab} onSelectTab={setCurrentTab} />
+            ) : (
+              /* ======================================================== */
+              /* WORKSPACE MODE 3: CUSTOMER PORTAL                        */
+              /* ======================================================== */
+              <>
               {/* TAB 1: DASHBOARD / BOOKING */}
               {currentTab === 'dashboard' && (
                 activeMatchingBooking ? (
@@ -177,9 +216,9 @@ function MainAppShell() {
                           </div>
 
                           <div className="p-3.5 rounded-xl bg-brand-grey-subtle dark:bg-brand-navy-dark/70 border border-slate-200 dark:border-brand-navy-border text-center col-span-2 sm:col-span-1">
-                            <span className="text-[11px] font-bold text-brand-muted dark:text-slate-400 block">{userProfile ? 'Rating' : 'Pilot Rating'}</span>
+                            <span className="text-[11px] font-bold text-brand-muted dark:text-slate-400 block">{userProfile ? 'Rating' : 'Safety Vetting'}</span>
                             <span className="text-lg font-extrabold text-amber-500 flex items-center justify-center gap-1">
-                              ★ {userProfile?.rating || '4.96'}
+                              ★ {userProfile?.rating ? Number(userProfile.rating).toFixed(1) : '5.0'}
                             </span>
                           </div>
                         </div>
@@ -274,10 +313,9 @@ function MainAppShell() {
               )}
             </>
           )}
+          </ErrorBoundary>
         </main>
       </div>
-
-      {/* Footer */}
       <Footer />
     </div>
   );
@@ -296,7 +334,25 @@ export default function App() {
 
 // Separate component that consumes Auth context
 function AppContent() {
-  const { user } = useAuth();
+  const { user, isLoading, isPasswordRecovery } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-brand-grey dark:bg-brand-navy-dark">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-brand-navy dark:border-brand-sky border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-xs font-bold text-brand-dark/70 dark:text-brand-sky/70 uppercase tracking-wider">
+            Loading DriveMate AI...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isPasswordRecovery) {
+    return <ResetPasswordModal />;
+  }
+
   return (
     <BookingProvider>
       <AuthModal />

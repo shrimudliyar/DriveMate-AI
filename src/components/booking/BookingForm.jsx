@@ -18,13 +18,13 @@ import { useBookings } from '../../context/BookingContext';
 export default function BookingForm({ initialValues, onBookingSuccess, savedVehicles = [] }) {
   const { createBooking } = useBookings();
   const [formData, setFormData] = useState({
-    pickup: 'Indiranagar 100ft Road, Bengaluru',
-    destination: 'Kempegowda International Airport (Terminal 2)',
+    pickup: '',
+    destination: '',
     date: new Date().toISOString().split('T')[0],
     time: '10:00',
     duration: 3,
     vehicleTier: 'standard',
-    vehicleId: savedVehicles[0]?.id || 'v1',
+    vehicleId: savedVehicles[0]?.id || '',
     tripNotes: '',
   });
 
@@ -105,9 +105,9 @@ export default function BookingForm({ initialValues, onBookingSuccess, savedVehi
         time: formData.time,
         duration: formData.duration,
         vehicleTier: formData.vehicleTier,
-        vehicleName: selectedCar ? `${selectedCar.make} ${selectedCar.model} (${selectedCar.regNumber})` : 'Personal Sedan',
+        vehicleName: selectedCar ? `${selectedCar.make} ${selectedCar.model} (${selectedCar.regNumber})` : 'Personal Vehicle',
         estimatedFare: fareObj.total,
-        tripNotes: formData.tripNotes || 'Customer instructed standard city ride.',
+        tripNotes: formData.tripNotes || '',
       });
 
       setIsSubmitting(false);
