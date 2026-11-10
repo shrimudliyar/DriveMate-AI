@@ -145,6 +145,21 @@ async function request(endpoint, options = {}) {
     } catch {
       errorDetail = `HTTP ${response.status}: ${response.statusText}`;
     }
+
+    // Never expose raw HTML error pages (e.g. Cloudflare 504 / proxy pages) to users
+    if (typeof errorDetail === 'string') {
+      const lower = errorDetail.toLowerCase();
+      if (lower.includes('<html') || lower.includes('<!doctype') || lower.includes('<head') || lower.includes('<body')) {
+        if (response.status === 504 || lower.includes('504')) {
+          errorDetail = 'Voice service timed out (upstream gateway 504). Please try speaking again or tap a sample route.';
+        } else if (response.status === 502 || lower.includes('502')) {
+          errorDetail = 'Voice service is temporarily unreachable (upstream 502). Please try again in a moment.';
+        } else {
+          errorDetail = `Service temporarily unavailable (HTTP ${response.status}). Please try again in a moment.`;
+        }
+      }
+    }
+
     const err = new Error(errorDetail);
     err.status = response.status;
     

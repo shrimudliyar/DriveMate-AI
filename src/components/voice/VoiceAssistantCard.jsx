@@ -45,6 +45,7 @@ export default function VoiceAssistantCard({ onSelectExamplePrompt, onBookingCre
   const audioChunksRef = useRef([]);
   const audioPlayerRef = useRef(null);
   const isMountedRef = useRef(true);
+  const isTranscribingRef = useRef(false);
 
   // Fetch backend voice status on mount
   useEffect(() => {
@@ -170,6 +171,9 @@ export default function VoiceAssistantCard({ onSelectExamplePrompt, onBookingCre
   // Speech Input Recording (Gnani Prisma STT)
   // -------------------------------------------------------------------------
   const startRecording = async () => {
+    if (isTranscribingRef.current || assistantState === 'transcribing' || assistantState === 'thinking') {
+      return;
+    }
     stopAudioPlayback();
     setErrorNotice(null);
 
@@ -208,6 +212,10 @@ export default function VoiceAssistantCard({ onSelectExamplePrompt, onBookingCre
           return;
         }
 
+        // Avoid duplicate transcription requests
+        if (isTranscribingRef.current) return;
+        isTranscribingRef.current = true;
+
         const actualMime = recorder.mimeType || mimeType || 'audio/webm';
         const audioBlob = new Blob(audioChunksRef.current, {
           type: actualMime,
@@ -224,13 +232,25 @@ export default function VoiceAssistantCard({ onSelectExamplePrompt, onBookingCre
             await processUserQuery(sttResult.transcript);
           } else {
             setErrorNotice('Could not recognize speech clearly. Please try again or tap a sample route.');
-            setAssistantState('idle');
+            if (isMountedRef.current) setAssistantState('idle');
           }
         } catch (err) {
           if (isMountedRef.current) {
-            setErrorNotice(err.message || 'Speech recognition failed.');
+            let msg = err.message || 'Speech recognition failed.';
+            // Clean any residual HTML
+            if (msg.includes('<') && msg.includes('>')) {
+              msg = msg.replace(/<[^>]+>/g, '').trim();
+            }
+            if (msg.includes('504') || msg.toLowerCase().includes('timed out')) {
+              msg = 'Gnani voice service timed out (upstream gateway 504). You can tap any sample trip below or try speaking again.';
+            } else if (msg.includes('502')) {
+              msg = 'Gnani voice service is currently unreachable (upstream 502). Please try again in a moment or tap a sample route.';
+            }
+            setErrorNotice(msg);
             setAssistantState('idle');
           }
+        } finally {
+          isTranscribingRef.current = false;
         }
       };
 
@@ -247,6 +267,9 @@ export default function VoiceAssistantCard({ onSelectExamplePrompt, onBookingCre
   };
 
   const handleToggleMic = () => {
+    if (isTranscribingRef.current || assistantState === 'transcribing' || assistantState === 'thinking') {
+      return;
+    }
     if (assistantState === 'listening') {
       stopMicrophone();
     } else if (assistantState === 'speaking') {

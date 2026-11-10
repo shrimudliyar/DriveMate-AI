@@ -220,3 +220,149 @@ def test_voice_stt_converts_webm_before_forwarding():
             )
 
 
+def test_call_gnani_stt_504_cloudflare_html_returns_clean_error():
+    """
+    SECURITY & RESILIENCE TEST:
+    When Gnani/Cloudflare returns an HTTP 504 Gateway Timeout HTML page,
+    call_gnani_stt must NOT leak raw HTML to the caller, and must raise a clean JSON error.
+    """
+    import asyncio
+    from app.routes.voice import call_gnani_stt
+    from fastapi import HTTPException
+    import httpx
+
+    cloudflare_504_html = (
+        "<!DOCTYPE html><html><head><title>504 Gateway time-out</title></head>"
+        "<body><center><h1>504 Gateway time-out</h1></center><hr><center>cloudflare</center></body></html>"
+    )
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 504
+    mock_resp.text = cloudflare_504_html
+    mock_resp.json.side_effect = Exception("Not JSON")
+
+    async def _run():
+        with patch.object(settings, "GNANI_API_KEY", "test-api-key"), \
+             patch("httpx.AsyncClient.post", return_value=mock_resp), \
+             patch("asyncio.sleep", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await call_gnani_stt(b"RIFFdummywav", "recording.wav", "audio/wav", "en-IN")
+
+            assert exc_info.value.status_code == 504
+            detail = exc_info.value.detail
+            assert "<html" not in detail.lower()
+            assert "<!doctype" not in detail.lower()
+            assert "504" in detail
+            assert "timed out" in detail.lower()
+
+    asyncio.run(_run())
+
+
+def test_call_gnani_stt_transient_504_retry_succeeds():
+    """
+    RESILIENCE TEST:
+    When Gnani STT returns a transient 504 on first attempt, the retry logic
+    must automatically retry once and succeed if the second attempt returns 200.
+    """
+    import asyncio
+    from app.routes.voice import call_gnani_stt
+    import httpx
+
+    resp_504 = MagicMock(spec=httpx.Response)
+    resp_504.status_code = 504
+    resp_504.text = "<html>504 Gateway Timeout</html>"
+
+    resp_200 = MagicMock(spec=httpx.Response)
+    resp_200.status_code = 200
+    resp_200.json.return_value = {
+        "success": True,
+        "transcript": "Airport Terminal 2",
+    }
+
+    async def _run():
+        with patch.object(settings, "GNANI_API_KEY", "test-api-key"), \
+             patch("httpx.AsyncClient.post", side_effect=[resp_504, resp_200]) as mock_post, \
+             patch("asyncio.sleep", return_value=None):
+            result = await call_gnani_stt(b"RIFFdummywav", "recording.wav", "audio/wav", "en-IN")
+            assert result == "Airport Terminal 2"
+            assert mock_post.call_count == 2
+
+    asyncio.run(_run())
+
+
+def test_call_gnani_tts_504_cloudflare_html_returns_clean_error():
+    """
+    RESILIENCE TEST:
+    When Gnani TTS returns an HTTP 504 HTML page, it must raise a clean error without HTML.
+    """
+    import asyncio
+    from app.routes.voice import call_gnani_tts
+    from fastapi import HTTPException
+    import httpx
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 504
+    mock_resp.text = "<html><body>504 Gateway Time-out</body></html>"
+    mock_resp.json.side_effect = Exception("Not JSON")
+
+    async def _run():
+        with patch.object(settings, "GNANI_API_KEY", "test-api-key"), \
+             patch("httpx.AsyncClient.post", return_value=mock_resp), \
+             patch("asyncio.sleep", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await call_gnani_tts("Hello from DriveMate AI")
+
+            assert exc_info.value.status_code == 504
+            assert "<html" not in exc_info.value.detail.lower()
+            assert "timed out" in exc_info.value.detail.lower()
+
+    asyncio.run(_run())
+
+
+def test_sanitize_upstream_error_helper():
+    from app.routes.voice import sanitize_upstream_error
+
+    # HTML 504 response
+    err_504 = sanitize_upstream_error(504, "<html><title>504 Gateway time-out</title></html>", "Gnani STT")
+    assert "<" not in err_504
+    assert "504" in err_504
+
+    # HTML 502 response
+    err_502 = sanitize_upstream_error(502, "<!DOCTYPE html>502 Bad Gateway", "Gnani STT")
+    assert "<" not in err_502
+    assert "502" in err_502
+
+    # JSON with HTML inside message
+    err_json = sanitize_upstream_error(400, '{"message": "<b>Invalid audio format</b>"}', "Gnani STT")
+    assert "<b>" not in err_json
+    assert "Invalid audio format" in err_json
+
+
+def test_tts_operates_independently_when_stt_fails():
+    """
+    INDEPENDENCE TEST:
+    Verify that Text-to-Speech (/api/voice/tts) remains fully operational
+    even when Speech-to-Text (/api/voice/stt) encounters upstream failure.
+    """
+    from fastapi import HTTPException
+    with patch.object(settings, "GNANI_API_KEY", "test-api-key-123"):
+        # STT fails with 504
+        with patch("app.routes.voice.call_gnani_stt", side_effect=HTTPException(status_code=504, detail="Gnani STT timed out")):
+            stt_resp = client.post(
+                "/api/voice/stt",
+                headers={"Content-Type": "application/json"},
+                json={"audio_base64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEA"},
+            )
+            assert stt_resp.status_code == 504
+
+        # TTS succeeds independently
+        with patch("app.routes.voice.call_gnani_tts", return_value=b"RIFFvalidttsoutput"):
+            tts_resp = client.post(
+                "/api/voice/tts",
+                json={"text": "Your verified chauffeur pilot is arriving soon."},
+            )
+            assert tts_resp.status_code == 200
+            assert tts_resp.content == b"RIFFvalidttsoutput"
+
+
+

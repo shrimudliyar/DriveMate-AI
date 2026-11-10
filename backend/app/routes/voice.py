@@ -27,6 +27,9 @@ import logging
 import subprocess
 import tempfile
 import os
+import time
+import json
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 import httpx
@@ -153,11 +156,53 @@ def ensure_wav_audio(audio_bytes: bytes, incoming_mime: str = "") -> bytes:
     )
 
 # ---------------------------------------------------------------------------
+# Helper: Error Sanitizer (Guarantees no raw HTML or secrets leak)
+# ---------------------------------------------------------------------------
+
+def sanitize_upstream_error(status_code: int, response_text: str, service_name: str = "Gnani STT") -> str:
+    """
+    Extracts a clean, safe, human-readable error description from an upstream response.
+    Guarantees raw HTML (e.g. Cloudflare 504 pages) and credentials are never returned.
+    """
+    if status_code == 504:
+        return f"{service_name} service timed out (upstream gateway 504). The AI voice provider may be experiencing high load. Please try speaking again or select a suggested route."
+    if status_code == 502:
+        return f"{service_name} service is currently unreachable (upstream gateway 502). Please try again shortly."
+    if status_code == 503:
+        return f"{service_name} service is temporarily unavailable (upstream 503). Please try again in a moment."
+    if status_code == 429:
+        return f"{service_name} rate limit reached. Please wait a moment before trying again."
+    if status_code in (401, 403):
+        return f"{service_name} authorization failed. Please check server configuration."
+
+    if response_text:
+        stripped = response_text.strip()
+        # If the body is an HTML document (Cloudflare, proxy error page, etc.), strip/avoid HTML tags
+        if stripped.startswith("<") or "<html" in stripped.lower() or "<!doctype" in stripped.lower():
+            return f"{service_name} service returned an upstream HTTP {status_code} error page."
+
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                msg = parsed.get("message") or parsed.get("detail") or parsed.get("error")
+                if msg and isinstance(msg, str):
+                    clean = re.sub(r"<[^>]+>", "", msg).strip()
+                    if clean:
+                        return f"{service_name} error ({status_code}): {clean[:200]}"
+        except Exception:
+            pass
+
+        if "<" not in stripped and len(stripped) < 200:
+            return f"{service_name} error ({status_code}): {stripped}"
+
+    return f"{service_name} returned unexpected HTTP {status_code}."
+
+# ---------------------------------------------------------------------------
 # Helper: Query Gnani STT
 # ---------------------------------------------------------------------------
 
 async def call_gnani_stt(file_bytes: bytes, filename: str, content_type: str, language_code: str) -> str:
-    """Calls official Gnani Prisma STT API at https://api.vachana.ai/stt/v3"""
+    """Calls official Gnani Prisma STT API at https://api.vachana.ai/stt/v3 with bounded timeout and safe retry."""
     url = f"{settings.GNANI_BASE_URL}/stt/v3"
     headers = {
         "X-API-Key-ID": settings.GNANI_API_KEY,
@@ -170,38 +215,71 @@ async def call_gnani_stt(file_bytes: bytes, filename: str, content_type: str, la
         "language_code": language_code or settings.GNANI_LANGUAGE_CODE
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    max_attempts = 2  # 1 initial attempt + 1 retry for transient errors
+    timeout_sec = 15.0
+    last_error_detail = "Unknown STT error."
+    last_status_code = status.HTTP_502_BAD_GATEWAY
+
+    for attempt in range(max_attempts):
+        t0 = time.time()
         try:
-            resp = await client.post(url, headers=headers, files=files, data=data)
-        except httpx.RequestError as exc:
-            logger.error("Gnani STT connection failed: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Unable to connect to Gnani STT service: {exc}"
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                resp = await client.post(url, headers=headers, files=files, data=data)
+            duration = round(time.time() - t0, 2)
+
+            if resp.status_code == 200:
+                logger.info("Gnani STT request to %s succeeded in %.2fs (attempt %d/%d)", url, duration, attempt + 1, max_attempts)
+                result = resp.json()
+                transcript = result.get("transcript") or result.get("text") or ""
+                if not transcript and isinstance(result.get("output"), dict):
+                    transcript = result.get("output", {}).get("literal", "")
+                return transcript.strip()
+
+            clean_err = sanitize_upstream_error(resp.status_code, resp.text, "Gnani STT")
+            logger.warning(
+                "Gnani STT upstream returned HTTP %d in %.2fs (attempt %d/%d): %s",
+                resp.status_code, duration, attempt + 1, max_attempts, clean_err
             )
+            last_error_detail = clean_err
+            last_status_code = status.HTTP_504_GATEWAY_TIMEOUT if resp.status_code == 504 else status.HTTP_502_BAD_GATEWAY
 
-    if resp.status_code != 200:
-        logger.error("Gnani STT returned HTTP %s: %s", resp.status_code, resp.text)
-        try:
-            err_json = resp.json()
-            err_msg = err_json.get("message") or err_json.get("detail") or resp.text
-        except Exception:
-            err_msg = resp.text
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gnani STT error ({resp.status_code}): {err_msg}"
-        )
+            # Only retry transient gateway errors (502, 503, 504)
+            if resp.status_code in (502, 503, 504) and attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
 
-    result = resp.json()
-    transcript = result.get("transcript") or result.get("text") or ""
-    return transcript.strip()
+        except (httpx.TimeoutException, httpx.ConnectTimeout) as exc:
+            duration = round(time.time() - t0, 2)
+            last_error_detail = f"Gnani STT service timed out after {duration}s. Upstream server did not respond in time."
+            last_status_code = status.HTTP_504_GATEWAY_TIMEOUT
+            logger.warning("Gnani STT timeout in %.2fs (attempt %d/%d)", duration, attempt + 1, max_attempts)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
+
+        except httpx.RequestError as exc:
+            duration = round(time.time() - t0, 2)
+            last_error_detail = f"Unable to connect to Gnani STT service: {type(exc).__name__}"
+            last_status_code = status.HTTP_502_BAD_GATEWAY
+            logger.error("Gnani STT connection error in %.2fs (attempt %d/%d): %s", duration, attempt + 1, max_attempts, type(exc).__name__)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
+
+    raise HTTPException(
+        status_code=last_status_code,
+        detail=last_error_detail,
+    )
 
 # ---------------------------------------------------------------------------
 # Helper: Query Gnani TTS
 # ---------------------------------------------------------------------------
 
 async def call_gnani_tts(text: str, voice: Optional[str] = None, language_code: Optional[str] = None, speed: float = 1.0) -> bytes:
-    """Calls official Gnani Timbre TTS API at https://api.vachana.ai/api/v1/tts/inference"""
+    """Calls official Gnani Timbre TTS API at https://api.vachana.ai/api/v1/tts/inference with bounded timeout and safe retry."""
     url = f"{settings.GNANI_BASE_URL}/api/v1/tts/inference"
     headers = {
         "X-API-Key-ID": settings.GNANI_API_KEY,
@@ -222,29 +300,59 @@ async def call_gnani_tts(text: str, voice: Optional[str] = None, language_code: 
         },
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    max_attempts = 2
+    timeout_sec = 15.0
+    last_error_detail = "Unknown TTS error."
+    last_status_code = status.HTTP_502_BAD_GATEWAY
+
+    for attempt in range(max_attempts):
+        t0 = time.time()
         try:
-            resp = await client.post(url, headers=headers, json=payload)
-        except httpx.RequestError as exc:
-            logger.error("Gnani TTS connection failed: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Unable to connect to Gnani TTS service: {exc}"
+            async with httpx.AsyncClient(timeout=timeout_sec) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+            duration = round(time.time() - t0, 2)
+
+            if resp.status_code == 200:
+                logger.info("Gnani TTS request to %s succeeded in %.2fs (attempt %d/%d)", url, duration, attempt + 1, max_attempts)
+                return resp.content
+
+            clean_err = sanitize_upstream_error(resp.status_code, resp.text, "Gnani TTS")
+            logger.warning(
+                "Gnani TTS upstream returned HTTP %d in %.2fs (attempt %d/%d): %s",
+                resp.status_code, duration, attempt + 1, max_attempts, clean_err
             )
+            last_error_detail = clean_err
+            last_status_code = status.HTTP_504_GATEWAY_TIMEOUT if resp.status_code == 504 else status.HTTP_502_BAD_GATEWAY
 
-    if resp.status_code != 200:
-        logger.error("Gnani TTS returned HTTP %s: %s", resp.status_code, resp.text)
-        try:
-            err_json = resp.json()
-            err_msg = err_json.get("message") or err_json.get("detail") or resp.text
-        except Exception:
-            err_msg = resp.text
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gnani TTS error ({resp.status_code}): {err_msg}"
-        )
+            if resp.status_code in (502, 503, 504) and attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
 
-    return resp.content
+        except (httpx.TimeoutException, httpx.ConnectTimeout) as exc:
+            duration = round(time.time() - t0, 2)
+            last_error_detail = f"Gnani TTS service timed out after {duration}s. Upstream server did not respond in time."
+            last_status_code = status.HTTP_504_GATEWAY_TIMEOUT
+            logger.warning("Gnani TTS timeout in %.2fs (attempt %d/%d)", duration, attempt + 1, max_attempts)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
+
+        except httpx.RequestError as exc:
+            duration = round(time.time() - t0, 2)
+            last_error_detail = f"Unable to connect to Gnani TTS service: {type(exc).__name__}"
+            last_status_code = status.HTTP_502_BAD_GATEWAY
+            logger.error("Gnani TTS connection error in %.2fs (attempt %d/%d): %s", duration, attempt + 1, max_attempts, type(exc).__name__)
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(0.8)
+                continue
+            break
+
+    raise HTTPException(
+        status_code=last_status_code,
+        detail=last_error_detail,
+    )
 
 # ---------------------------------------------------------------------------
 # Natural Intent & Entity Parser for DriveMate AI
